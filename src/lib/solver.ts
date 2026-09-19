@@ -10,7 +10,10 @@
  * 总成本为所选字体成本之和，越小越好。
  *
  * 算法：
- *   1. 无可覆盖字体的模式直接记为不可满足（缺失）；
+ *   0. 应用入链约束：被排除（禁止入链）的字体从所有需求模式中剔除，
+ *      候选被剔空的模式记为「约束导致不可满足」；锁定（必须入链）的字体
+ *      无条件入选，即使它不覆盖任何模式；
+ *   1. 无可覆盖字体的模式直接记为不可满足（自然缺失）；
  *   2. 唯一候选字体强制入选；
  *   3. 支配约简（覆盖集真超集且成本不更高的字体淘汰被支配者）；
  *   4. 贪心 + 删除/交换局部搜索得到优质 incumbent；
@@ -28,21 +31,29 @@ export interface SolveInput {
   lengthPriority: number;
   /** 分支定界节点预算 */
   nodeBudget?: number;
+  /** 必须入链（锁定）的字体下标；与 excluded 冲突时以排除为准 */
+  locked?: number[];
+  /** 禁止入链（排除）的字体下标，求解前从全部候选中剔除 */
+  excluded?: number[];
 }
 
 export interface SolveOutput {
   /** 入选字体下标，按偏好顺序排列 */
   selected: number[];
-  /** 是否所有模式均可满足 */
+  /** 是否所有模式均可满足（含约束导致不可满足时为 false） */
   feasible: boolean;
-  /** 无任何字体可覆盖的模式下标 */
+  /** 无任何字体可覆盖的模式下标（自然缺失） */
   unsatisfiable: number[];
+  /** 原本有候选、但候选全部被排除约束剔除的模式下标（约束导致缺失） */
+  constraintUnsatisfiable: number[];
   /** 是否精确最优（false 表示预算内未完成证明，返回启发式结果） */
   exact: boolean;
   objective: number;
   nodesExplored: number;
   /** 被唯一候选强制的字体 */
   forced: number[];
+  /** 实际入链的锁定字体（已剔除越界与和排除冲突者），按偏好顺序 */
+  locked: number[];
 }
 
 const EPS = 1e-9;
@@ -71,26 +82,45 @@ export function solveFallbackChain(input: SolveInput): SolveOutput {
     cost.push(primary + tieBreak * 1e-6);
   }
 
+  // ---- 入链约束：先剔除禁用候选，再把锁定字体纳入目标链 ----
+  const excludedSet = new Set(
+    (input.excluded ?? []).filter((f) => f >= 0 && f < fontCount),
+  );
+  const lockedSet = new Set(
+    (input.locked ?? []).filter((f) => f >= 0 && f < fontCount && !excludedSet.has(f)),
+  );
+  // 各需求模式剔除被排除字体后的候选列表（无排除时复用原数组，只读）
+  const allowed = patterns.map((fonts) =>
+    excludedSet.size === 0 ? fonts : fonts.filter((f) => !excludedSet.has(f)),
+  );
+
   const unsatisfiable: number[] = [];
+  const constraintUnsatisfiable: number[] = [];
   const workable: number[] = [];
   patterns.forEach((fonts, p) => {
     if (fonts.length === 0) unsatisfiable.push(p);
+    else if (allowed[p].length === 0) constraintUnsatisfiable.push(p);
     else workable.push(p);
   });
 
   // 字体 -> 可覆盖的模式
   const fontPatterns: number[][] = Array.from({ length: fontCount }, () => []);
   for (const p of workable) {
-    for (const f of patterns[p]) fontPatterns[f].push(p);
+    for (const f of allowed[p]) fontPatterns[f].push(p);
+  }
+
+  // 锁定字体强制入选（即使不覆盖任何模式）
+  const covered = new Set<number>();
+  for (const f of lockedSet) {
+    for (const q of fontPatterns[f]) covered.add(q);
   }
 
   // 唯一候选强制入选
   const forcedSet = new Set<number>();
-  const covered = new Set<number>();
   for (const p of workable) {
-    if (patterns[p].length === 1) {
-      const f = patterns[p][0];
-      if (!forcedSet.has(f)) {
+    if (allowed[p].length === 1) {
+      const f = allowed[p][0];
+      if (!lockedSet.has(f) && !forcedSet.has(f)) {
         forcedSet.add(f);
         for (const q of fontPatterns[f]) covered.add(q);
       }
@@ -102,10 +132,12 @@ export function solveFallbackChain(input: SolveInput): SolveOutput {
   remaining.forEach((p, i) => localIndex.set(p, i));
   const P = remaining.length;
 
+  // 已预选（锁定/唯一候选强制）的字体不再参与优化
+  const preselected = (f: number) => lockedSet.has(f) || forcedSet.has(f);
   const candidateSet = new Set<number>();
   for (const p of remaining) {
-    for (const f of patterns[p]) {
-      if (!forcedSet.has(f)) candidateSet.add(f);
+    for (const f of allowed[p]) {
+      if (!preselected(f)) candidateSet.add(f);
     }
   }
   let candidates = [...candidateSet];
@@ -139,16 +171,20 @@ export function solveFallbackChain(input: SolveInput): SolveOutput {
   candidates = candidates.filter((f) => !dominated.has(f));
 
   const finish = (sel: number[], exact: boolean, nodes: number): SolveOutput => {
-    const selected = [...forcedSet, ...sel].sort((a, b) => preference[a] - preference[b]);
+    const selected = [...lockedSet, ...forcedSet, ...sel].sort(
+      (a, b) => preference[a] - preference[b],
+    );
     const objective = selected.reduce((s, f) => s + cost[f], 0);
     return {
       selected,
-      feasible: unsatisfiable.length === 0,
+      feasible: unsatisfiable.length === 0 && constraintUnsatisfiable.length === 0,
       unsatisfiable,
+      constraintUnsatisfiable,
       exact,
       objective,
       nodesExplored: nodes,
       forced: [...forcedSet],
+      locked: [...lockedSet].sort((a, b) => preference[a] - preference[b]),
     };
   };
 
@@ -235,7 +271,7 @@ export function solveFallbackChain(input: SolveInput): SolveOutput {
     const bits: bigint[] = [];
     for (let i = 0; i < P; i++) bits.push(1n << BigInt(i));
     const patFonts: number[][] = remaining.map((p) =>
-      patterns[p].filter((f) => mask.has(f) && !dominated.has(f)),
+      allowed[p].filter((f) => mask.has(f) && !dominated.has(f)),
     );
     const minPatCost = patFonts.map((fs) =>
       fs.length ? Math.min(...fs.map((f) => cost[f])) : Infinity,

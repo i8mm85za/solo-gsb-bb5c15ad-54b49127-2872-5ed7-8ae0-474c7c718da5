@@ -112,6 +112,18 @@ export default function App() {
   );
   const validFonts = useMemo(() => validEntries.map((e) => e.font), [validEntries]);
 
+  // ---- 入链约束：按有效字体下标汇总（约束随字体 id 保留，排序/覆盖源切换不影响） ----
+  const lockedIdx = useMemo(
+    () => validEntries.flatMap((e, i) => (e.font.constraint === 'locked' ? [i] : [])),
+    [validEntries],
+  );
+  const excludedIdx = useMemo(
+    () => validEntries.flatMap((e, i) => (e.font.constraint === 'excluded' ? [i] : [])),
+    [validEntries],
+  );
+  const lockedSet = useMemo(() => new Set(lockedIdx), [lockedIdx]);
+  const excludedSet = useMemo(() => new Set(excludedIdx), [excludedIdx]);
+
   // ---- 各场景字素簇切分 ----
   const groupsGraphemes = useMemo(
     () => scenarios.map((s) => ({ scenarioId: s.id, graphemes: segmentGraphemes(s.text) })),
@@ -135,6 +147,7 @@ export default function App() {
   );
 
   // ---- 回退链求解：所有场景的需求模式参与一次求解，链中字体全局唯一 ----
+  // 求解器先剔除「禁止入链」候选，再把「必须入链」字体纳入链中，最后优化其余字体。
   const solution = useMemo(
     () =>
       solveFallbackChain({
@@ -142,8 +155,10 @@ export default function App() {
         preference: validEntries.map((e) => e.order),
         patterns: analysis.patterns,
         lengthPriority,
+        locked: lockedIdx,
+        excluded: excludedIdx,
       }),
-    [validFonts.length, validEntries, analysis.patterns, lengthPriority],
+    [validFonts.length, validEntries, analysis.patterns, lengthPriority, lockedIdx, excludedIdx],
   );
 
   // ---- 承接分配：每个簇由共享链中第一种可覆盖字体承接（与浏览器回退语义一致） ----
@@ -160,16 +175,22 @@ export default function App() {
       }
       const assigned = chainOrder.find((f) => c.candidates.includes(f)) ?? null;
       if (assigned === null) {
+        // 约束导致缺失：有候选字体，但候选全部被「禁止入链」排除；
+        // 可解除该缺失的字体 = 候选中被排除的字体
+        const constraintMissing =
+          c.candidates.length > 0 && c.candidates.every((f) => excludedSet.has(f));
         return toScenarioClusterAudit(
           c,
           null,
           'missing',
-          findMissingCodepoints(c.required, validFonts),
+          constraintMissing ? [] : findMissingCodepoints(c.required, validFonts),
+          constraintMissing ? 'constraint' : 'natural',
+          constraintMissing ? c.candidates.filter((f) => excludedSet.has(f)) : [],
         );
       }
       return toScenarioClusterAudit(c, assigned, 'covered', []);
     });
-  }, [analysis.clusters, solution.selected, validFonts]);
+  }, [analysis.clusters, solution.selected, validFonts, excludedSet]);
 
   // ---- 共享链上每种字体的承接簇数（参与场景合计 + 逐场景拆分；按场景 id 索引） ----
   const chain: ScenarioChainEntry[] = useMemo(() => {
@@ -192,15 +213,17 @@ export default function App() {
       preference: validEntries[fontIndex].order,
       assignedClusters: totals.get(fontIndex) ?? 0,
       scenarioCounts: Object.fromEntries(perScenario.get(fontIndex) ?? new Map()),
+      locked: lockedSet.has(fontIndex),
     }));
-  }, [flatClusters, solution.selected, validFonts, validEntries]);
+  }, [flatClusters, solution.selected, validFonts, validEntries, lockedSet]);
 
+  // 未入选（冗余）：不含被「禁止入链」排除的字体（排除不是冗余）
   const unselected = useMemo(
     () =>
       validEntries
-        .filter((_, i) => !solution.selected.includes(i))
+        .filter((_, i) => !solution.selected.includes(i) && !excludedSet.has(i))
         .map((e) => ({ name: e.font.name, preference: e.order })),
-    [validEntries, solution.selected],
+    [validEntries, solution.selected, excludedSet],
   );
 
   // ---- 逐场景视图：覆盖率 / 缺失簇 / 承接字体（场景内簇保序） ----
@@ -232,7 +255,7 @@ export default function App() {
     [scenarios, flatClusters, chain],
   );
 
-  // ---- 单字体失效韧性分析：逐一移除链中字体并对参与场景重解 ----
+  // ---- 单字体失效韧性分析：逐一移除链中字体并对参与场景重解（入链约束保持生效） ----
   const resilience = useMemo(
     () =>
       solution.selected.length > 0
@@ -244,6 +267,8 @@ export default function App() {
             lengthPriority,
             baselineClusters: flatClusters,
             baselineChain: solution.selected,
+            locked: lockedIdx,
+            excluded: excludedIdx,
           })
         : [],
     [
@@ -254,6 +279,8 @@ export default function App() {
       lengthPriority,
       flatClusters,
       solution.selected,
+      lockedIdx,
+      excludedIdx,
     ],
   );
 
@@ -287,6 +314,12 @@ export default function App() {
       lengthPriority,
       ignoreFormatCodepoints: ignoreFormat,
       useMeasuredCoverage: useMeasured,
+      // 入链约束清单（仅非「普通」条目），随审计 JSON 导出
+      fontConstraints: validEntries.flatMap((e) =>
+        e.font.constraint === 'normal'
+          ? []
+          : [{ name: e.font.name, preference: e.order, constraint: e.font.constraint }],
+      ),
     }),
     [mode, scenarios, activeScenarioId, parsed, validEntries, lengthPriority, ignoreFormat, useMeasured],
   );
@@ -308,7 +341,10 @@ export default function App() {
   const removeFont = (id: string) =>
     setFonts((fs) => fs.filter((f) => f.id !== id));
   const addFont = () =>
-    setFonts((fs) => [...fs, { id: uid(), name: '', rangesText: '', file: null }]);
+    setFonts((fs) => [
+      ...fs,
+      { id: uid(), name: '', rangesText: '', file: null, constraint: 'normal' },
+    ]);
 
   // ---- 场景编辑 ----
   const patchActive = (patch: Partial<ScenarioSpec>) =>
@@ -448,6 +484,7 @@ export default function App() {
         name: e.name,
         preference: e.preference,
         assignedClusters: e.assignedClusters,
+        locked: e.locked,
       })),
     [chain],
   );
@@ -495,7 +532,8 @@ export default function App() {
           <p className="muted small">
             列表顺序即回退偏好（↑ 更优先）。范围语法：<code>U+0020-007E</code>、<code>U+4E00</code>、
             <code>U+4??</code>，逗号或空白分隔。可上传本地 TTF/OTF，浏览器端解析 cmap（format 4/12）
-            得到实测覆盖，文件仅在本机内存中解析。
+            得到实测覆盖，文件仅在本机内存中解析。每个字体可设入链约束：
+            <strong>普通 / 必须入链 / 禁止入链</strong>，约束随字体保留，调整顺序或切换声明/实测覆盖不影响。
             {mode === 'set' && ' 字体与顺序由全部场景共享。'}
           </p>
           <FontEditor
@@ -588,7 +626,8 @@ export default function App() {
       </main>
 
       <footer className="app-footer">
-        字素簇切分基于 Intl.Segmenter · 求解器：唯一候选强制 + 支配约简 + 分支定界（预算内精确，超时退回贪心/局部搜索）
+        字素簇切分基于 Intl.Segmenter · 求解器：入链约束（锁定/排除）+ 唯一候选强制 + 支配约简 +
+        分支定界（预算内精确，超时退回贪心/局部搜索）
         {mode === 'set' && ' · 场景集：全部场景簇合并参与一次求解，共享链全局唯一'}
         · 上传字体仅在浏览器内解析 cmap，不发送服务端、不持久化
       </footer>

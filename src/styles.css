@@ -10,6 +10,7 @@
   --ok: #3fb950;
   --ok-soft: rgba(63, 185, 80, 0.12);
   --warn: #d29922;
+  --warn-soft: rgba(210, 153, 34, 0.12);
   --bad: #f85149;
   --bad-soft: rgba(248, 81, 73, 0.12);
   --mono: ui-monospace, "SF Mono", "Cascadia Code", Consolas, "Liberation Mono", monospace;
@@ -241,6 +242,64 @@ code {
 
 .font-row.has-error {
   border-color: rgba(248, 81, 73, 0.5);
+}
+
+.font-row.constraint-locked {
+  border-color: rgba(88, 166, 255, 0.55);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.font-row.constraint-excluded {
+  border-color: rgba(248, 81, 73, 0.45);
+  opacity: 0.85;
+}
+
+/* ---- 入链约束三态选择 ---- */
+.constraint-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.constraint-label {
+  flex-shrink: 0;
+}
+
+.constraint-group {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg);
+}
+
+.constraint-btn {
+  padding: 2px 10px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s;
+}
+
+.constraint-btn:hover {
+  color: var(--text);
+}
+
+.constraint-btn.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.constraint-btn.active.excluded {
+  background: var(--bad-soft);
+  color: var(--bad);
 }
 
 .font-order {
@@ -477,7 +536,7 @@ code {
 
 .stat-grid {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
   gap: 10px;
   margin-bottom: 14px;
 }
@@ -515,6 +574,10 @@ code {
   color: var(--bad);
 }
 
+.stat.warn .stat-value {
+  color: var(--warn);
+}
+
 /* ---- 告警条 ---- */
 .alert {
   display: flex;
@@ -534,6 +597,11 @@ code {
 .alert.bad {
   background: var(--bad-soft);
   border: 1px solid rgba(248, 81, 73, 0.4);
+}
+
+.alert.warn {
+  background: var(--warn-soft);
+  border: 1px solid rgba(210, 153, 34, 0.45);
 }
 
 .alert.mode {
@@ -557,6 +625,12 @@ code {
   color: var(--bad);
   text-align: center;
   font-size: 14px;
+}
+
+.missing-chip.constraint {
+  background: var(--warn-soft);
+  border-color: rgba(210, 153, 34, 0.5);
+  color: var(--warn);
 }
 
 /* ---- 回退链 ---- */
@@ -813,6 +887,10 @@ code {
   background: var(--bad-soft);
 }
 
+.row-constraint {
+  background: var(--warn-soft);
+}
+
 .glyph-cell {
   font-size: 18px;
   min-width: 40px;
@@ -854,6 +932,18 @@ code {
   background: var(--bad-soft);
   color: var(--bad);
   border: 1px solid rgba(248, 81, 73, 0.4);
+}
+
+.badge.warn {
+  background: var(--warn-soft);
+  color: var(--warn);
+  border: 1px solid rgba(210, 153, 34, 0.45);
+}
+
+.badge.lock {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: 1px solid rgba(88, 166, 255, 0.4);
 }
 
 .badge.muted-badge {

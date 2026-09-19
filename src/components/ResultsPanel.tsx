@@ -65,13 +65,33 @@ export default function ResultsPanel(props: ResultsPanelProps) {
   const [baselineFileName, setBaselineFileName] = useState<string | null>(null);
 
   const missing = clusters.filter((c) => c.status === 'missing');
+  const naturalMissing = missing.filter((c) => c.missingKind !== 'constraint');
+  const constraintMissing = missing.filter((c) => c.missingKind === 'constraint');
   const coveredCount = clusters.length - missing.length;
   const generatedAt = useMemo(() => new Date().toISOString(), [clusters, chain]);
+
+  // 入链约束清单（仅有效字体参与求解；约束随字体 id 保留）
+  const constraintSummary = useMemo(
+    () => ({
+      locked: validFonts
+        .filter((f) => f.constraint === 'locked')
+        .map((f) => f.name || '(未命名)'),
+      excluded: validFonts
+        .filter((f) => f.constraint === 'excluded')
+        .map((f) => f.name || '(未命名)'),
+    }),
+    [validFonts],
+  );
+  const constraintsActive =
+    constraintSummary.locked.length > 0 || constraintSummary.excluded.length > 0;
 
   const resolveFontName = (i: number | null): string | null =>
     i === null || i >= validFonts.length ? null : validFonts[i].name;
 
-  const cssText = useMemo(() => buildCssExport(chain, generatedAt), [chain, generatedAt]);
+  const cssText = useMemo(
+    () => buildCssExport(chain, generatedAt, constraintSummary),
+    [chain, generatedAt, constraintSummary],
+  );
   const jsonText = useMemo(() => {
     const result: AuditResultData = {
       feasible,
@@ -133,9 +153,13 @@ export default function ResultsPanel(props: ResultsPanelProps) {
           <div className="stat-value">{coveredCount}</div>
           <div className="stat-label">已覆盖</div>
         </div>
-        <div className={`stat${missing.length ? ' bad' : ''}`}>
-          <div className="stat-value">{missing.length}</div>
-          <div className="stat-label">缺失</div>
+        <div className={`stat${naturalMissing.length ? ' bad' : ''}`}>
+          <div className="stat-value">{naturalMissing.length}</div>
+          <div className="stat-label">自然缺失</div>
+        </div>
+        <div className={`stat${constraintMissing.length ? ' warn' : ''}`}>
+          <div className="stat-value">{constraintMissing.length}</div>
+          <div className="stat-label">约束缺失</div>
         </div>
         <div className="stat">
           <div className="stat-value">{chain.length}</div>
@@ -147,22 +171,58 @@ export default function ResultsPanel(props: ResultsPanelProps) {
         </div>
       </div>
 
-      {!feasible && (
+      {naturalMissing.length > 0 && (
         <div className="alert bad">
-          <strong>⚠ 存在 {missing.length} 个无法覆盖的字素簇</strong>
+          <strong>⚠ 存在 {naturalMissing.length} 个自然缺失字素簇（任何有效字体都不覆盖）</strong>
           <span className="alert-detail">
-            {missing.slice(0, 8).map((c) => (
+            {naturalMissing.slice(0, 8).map((c) => (
               <span key={c.index} className="missing-chip" title={c.missingCodepoints.map(formatCodepoint).join(' ')}>
                 {displayCluster(c.text)}
               </span>
             ))}
-            {missing.length > 8 && ` 等 ${missing.length} 个`}
+            {naturalMissing.length > 8 && ` 等 ${naturalMissing.length} 个`}
             —— 请为缺失码位补充字体范围，或从文本中移除这些字符。
+          </span>
+        </div>
+      )}
+      {constraintMissing.length > 0 && (
+        <div className="alert warn">
+          <strong>⚠ {constraintMissing.length} 个字素簇因「禁止入链」约束缺失</strong>
+          <span className="alert-detail">
+            {constraintMissing.slice(0, 8).map((c) => (
+              <span
+                key={c.index}
+                className="missing-chip constraint"
+                title={`解除排除即可恢复：${c.unblockFonts
+                  .map((i) => validFonts[i]?.name || '(未命名)')
+                  .join('、')}`}
+              >
+                {displayCluster(c.text)}
+              </span>
+            ))}
+            {constraintMissing.length > 8 && ` 等 ${constraintMissing.length} 个`}
+            —— 这些簇仅被已排除的字体覆盖；解除「禁止入链」或补充其他可覆盖字体即可恢复。
           </span>
         </div>
       )}
       {feasible && validFonts.length > 0 && (
         <div className="alert ok">✓ 可行：当前回退链可覆盖全部 {clusters.length} 个字素簇。</div>
+      )}
+
+      {constraintsActive && (
+        <div className="alert mode">
+          <strong>🔒 入链约束已生效</strong>
+          <span className="alert-detail">
+            {constraintSummary.locked.length > 0 &&
+              `必须入链：${constraintSummary.locked.join('、')}`}
+            {constraintSummary.locked.length > 0 &&
+              constraintSummary.excluded.length > 0 &&
+              ' · '}
+            {constraintSummary.excluded.length > 0 &&
+              `禁止入链：${constraintSummary.excluded.join('、')}`}
+            。约束随字体保留，调整顺序或切换声明/实测覆盖不影响。
+          </span>
+        </div>
       )}
 
       {useMeasured && (
@@ -186,6 +246,7 @@ export default function ResultsPanel(props: ResultsPanelProps) {
                 <li key={e.fontIndex} className="chain-item">
                   <span className="chain-order">{i + 1}</span>
                   <span className="chain-name">{e.name || '(未命名)'}</span>
+                  {e.locked && <span className="badge lock">🔒 必须入链</span>}
                   <span className="chain-meta">
                     承接 {e.assignedClusters} 簇 · 偏好 #{e.preference + 1}
                   </span>
@@ -196,6 +257,12 @@ export default function ResultsPanel(props: ResultsPanelProps) {
               <p className="muted small">
                 未入选（冗余）：{unselected.map((u) => u.name || '(未命名)').join('、')}
                 —— 其覆盖范围已被链中更优先的字体包含。
+              </p>
+            )}
+            {constraintSummary.excluded.length > 0 && (
+              <p className="muted small">
+                已排除（禁止入链）：{constraintSummary.excluded.join('、')}
+                —— 求解前已剔除，不计入冗余；可在左侧字体列表改回「普通」。
               </p>
             )}
             <p className="muted small">

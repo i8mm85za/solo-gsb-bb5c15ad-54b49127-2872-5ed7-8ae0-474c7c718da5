@@ -97,20 +97,42 @@ export default function SetResultsPanel(props: SetResultsPanelProps) {
   const generatedAt = useMemo(() => new Date().toISOString(), [allClusters, chain]);
 
   const missing = allClusters.filter((c) => c.status === 'missing');
+  const naturalMissing = missing.filter((c) => c.missingKind !== 'constraint');
+  const constraintMissing = missing.filter((c) => c.missingKind === 'constraint');
   const coveredCount = allClusters.length - missing.length;
   const nonEmpty = scenarios.filter((s) => s.clusters.length > 0).length;
   const emptyCount = scenarios.length - nonEmpty;
+
+  // 入链约束清单（仅有效字体参与求解；约束随字体 id 保留）
+  const constraintSummary = useMemo(
+    () => ({
+      locked: validFonts
+        .filter((f) => f.constraint === 'locked')
+        .map((f) => f.name || '(未命名)'),
+      excluded: validFonts
+        .filter((f) => f.constraint === 'excluded')
+        .map((f) => f.name || '(未命名)'),
+    }),
+    [validFonts],
+  );
+  const constraintsActive =
+    constraintSummary.locked.length > 0 || constraintSummary.excluded.length > 0;
 
   const active =
     scenarios.find((s) => s.id === activeScenarioId) ?? scenarios[0];
   const activeMissing = active
     ? active.clusters.filter((c) => c.status === 'missing')
     : [];
+  const activeNaturalMissing = activeMissing.filter((c) => c.missingKind !== 'constraint');
+  const activeConstraintMissing = activeMissing.filter((c) => c.missingKind === 'constraint');
 
   const resolveFontName = (i: number | null): string | null =>
     i === null || i >= validFonts.length ? null : validFonts[i].name;
 
-  const cssText = useMemo(() => buildCssExport(chain, generatedAt), [chain, generatedAt]);
+  const cssText = useMemo(
+    () => buildCssExport(chain, generatedAt, constraintSummary),
+    [chain, generatedAt, constraintSummary],
+  );
   const jsonText = useMemo(() => {
     const result: ScenarioSetResultData = {
       feasible,
@@ -169,9 +191,13 @@ export default function SetResultsPanel(props: SetResultsPanelProps) {
           <div className="stat-value">{coveredCount}</div>
           <div className="stat-label">已覆盖</div>
         </div>
-        <div className={`stat${missing.length ? ' bad' : ''}`}>
-          <div className="stat-value">{missing.length}</div>
-          <div className="stat-label">缺失</div>
+        <div className={`stat${naturalMissing.length ? ' bad' : ''}`}>
+          <div className="stat-value">{naturalMissing.length}</div>
+          <div className="stat-label">自然缺失</div>
+        </div>
+        <div className={`stat${constraintMissing.length ? ' warn' : ''}`}>
+          <div className="stat-value">{constraintMissing.length}</div>
+          <div className="stat-label">约束缺失</div>
         </div>
         <div className="stat">
           <div className="stat-value">{chain.length}</div>
@@ -179,11 +205,11 @@ export default function SetResultsPanel(props: SetResultsPanelProps) {
         </div>
       </div>
 
-      {!feasible && (
+      {naturalMissing.length > 0 && (
         <div className="alert bad">
-          <strong>⚠ 各场景合计 {missing.length} 个无法覆盖的字素簇</strong>
+          <strong>⚠ 各场景合计 {naturalMissing.length} 个自然缺失字素簇（任何有效字体都不覆盖）</strong>
           <span className="alert-detail">
-            {missing.slice(0, 8).map((c) => (
+            {naturalMissing.slice(0, 8).map((c) => (
               <span
                 key={`${c.scenarioId}:${c.localIndex}`}
                 className="missing-chip"
@@ -194,8 +220,28 @@ export default function SetResultsPanel(props: SetResultsPanelProps) {
                 {displayCluster(c.text)}
               </span>
             ))}
-            {missing.length > 8 && ` 等 ${missing.length} 个`}
+            {naturalMissing.length > 8 && ` 等 ${naturalMissing.length} 个`}
             —— 请为缺失码位补充字体范围（可在下方逐场景查看缺失归属）。
+          </span>
+        </div>
+      )}
+      {constraintMissing.length > 0 && (
+        <div className="alert warn">
+          <strong>⚠ 各场景合计 {constraintMissing.length} 个字素簇因「禁止入链」约束缺失</strong>
+          <span className="alert-detail">
+            {constraintMissing.slice(0, 8).map((c) => (
+              <span
+                key={`${c.scenarioId}:${c.localIndex}`}
+                className="missing-chip constraint"
+                title={`「${scenarioLabel(c) ?? '?'}」#${c.localIndex + 1} · 解除排除即可恢复：${c.unblockFonts
+                  .map((i) => validFonts[i]?.name || '(未命名)')
+                  .join('、')}`}
+              >
+                {displayCluster(c.text)}
+              </span>
+            ))}
+            {constraintMissing.length > 8 && ` 等 ${constraintMissing.length} 个`}
+            —— 这些簇仅被已排除的字体覆盖；解除「禁止入链」或补充其他可覆盖字体即可恢复。
           </span>
         </div>
       )}
@@ -220,6 +266,22 @@ export default function SetResultsPanel(props: SetResultsPanelProps) {
         </div>
       )}
 
+      {constraintsActive && (
+        <div className="alert mode">
+          <strong>🔒 入链约束已生效</strong>
+          <span className="alert-detail">
+            {constraintSummary.locked.length > 0 &&
+              `必须入链：${constraintSummary.locked.join('、')}`}
+            {constraintSummary.locked.length > 0 &&
+              constraintSummary.excluded.length > 0 &&
+              ' · '}
+            {constraintSummary.excluded.length > 0 &&
+              `禁止入链：${constraintSummary.excluded.join('、')}`}
+            。约束随字体保留，调整顺序或切换声明/实测覆盖不影响；全部场景共用同一约束。
+          </span>
+        </div>
+      )}
+
       <section className="block">
         <h3>共享回退链（场景集全局唯一，按偏好顺序）</h3>
         {chain.length === 0 ? (
@@ -231,6 +293,7 @@ export default function SetResultsPanel(props: SetResultsPanelProps) {
                 <li key={e.fontIndex} className="chain-item">
                   <span className="chain-order">{i + 1}</span>
                   <span className="chain-name">{e.name || '(未命名)'}</span>
+                  {e.locked && <span className="badge lock">🔒 必须入链</span>}
                   <span
                     className="chain-meta"
                     title={scenarios
@@ -273,6 +336,12 @@ export default function SetResultsPanel(props: SetResultsPanelProps) {
               <p className="muted small">
                 未入选（冗余）：{unselected.map((u) => u.name || '(未命名)').join('、')}
                 —— 其覆盖范围已被共享链中更优先的字体包含。
+              </p>
+            )}
+            {constraintSummary.excluded.length > 0 && (
+              <p className="muted small">
+                已排除（禁止入链）：{constraintSummary.excluded.join('、')}
+                —— 求解前已剔除，不计入冗余；可在左侧字体列表改回「普通」。
               </p>
             )}
             <p className="muted small">
@@ -352,15 +421,17 @@ export default function SetResultsPanel(props: SetResultsPanelProps) {
                     {pct(coverageRate(active))}
                   </strong>{' '}
                   · 缺失 {activeMissing.length} 簇
+                  {activeConstraintMissing.length > 0 &&
+                    `（含约束缺失 ${activeConstraintMissing.length}）`}
                 </span>
               )}
             </div>
 
-            {activeMissing.length > 0 && (
+            {activeNaturalMissing.length > 0 && (
               <div className="alert bad">
-                <strong>⚠ 该场景 {activeMissing.length} 个缺失字素簇</strong>
+                <strong>⚠ 该场景 {activeNaturalMissing.length} 个自然缺失字素簇</strong>
                 <span className="alert-detail">
-                  {activeMissing.slice(0, 12).map((c) => (
+                  {activeNaturalMissing.slice(0, 12).map((c) => (
                     <span
                       key={c.localIndex}
                       className="missing-chip"
@@ -369,7 +440,28 @@ export default function SetResultsPanel(props: SetResultsPanelProps) {
                       {displayCluster(c.text)}
                     </span>
                   ))}
-                  {activeMissing.length > 12 && ` 等 ${activeMissing.length} 个`}
+                  {activeNaturalMissing.length > 12 && ` 等 ${activeNaturalMissing.length} 个`}
+                </span>
+              </div>
+            )}
+            {activeConstraintMissing.length > 0 && (
+              <div className="alert warn">
+                <strong>⚠ 该场景 {activeConstraintMissing.length} 个字素簇因「禁止入链」约束缺失</strong>
+                <span className="alert-detail">
+                  {activeConstraintMissing.slice(0, 12).map((c) => (
+                    <span
+                      key={c.localIndex}
+                      className="missing-chip constraint"
+                      title={`解除排除即可恢复：${c.unblockFonts
+                        .map((i) => validFonts[i]?.name || '(未命名)')
+                        .join('、')}`}
+                    >
+                      {displayCluster(c.text)}
+                    </span>
+                  ))}
+                  {activeConstraintMissing.length > 12 &&
+                    ` 等 ${activeConstraintMissing.length} 个`}
+                  —— 仅被已排除字体覆盖，解除「禁止入链」即可恢复。
                 </span>
               </div>
             )}

@@ -93,16 +93,29 @@ export default function BudgetPanel(props: BudgetPanelProps) {
     }));
   }, [clusters, scenarios]);
 
+  // 被「禁止入链」排除的字体不作为补字对象（补了也不会进入回退链）
+  const eligible = useMemo(() => {
+    const fonts: ParsedFont[] = [];
+    const pref: number[] = [];
+    validFonts.forEach((f, i) => {
+      if (f.constraint !== 'excluded') {
+        fonts.push(f);
+        pref.push(preference[i] ?? i);
+      }
+    });
+    return { fonts, pref };
+  }, [validFonts, preference]);
+
   const plan = useMemo(
     () =>
       planGlyphBudget({
         clusters: planClusters,
-        fonts: validFonts,
-        preference,
+        fonts: eligible.fonts,
+        preference: eligible.pref,
         scenarios,
         budget,
       }),
-    [planClusters, validFonts, preference, scenarios, budget],
+    [planClusters, eligible, scenarios, budget],
   );
 
   const generatedAt = useMemo(() => new Date().toISOString(), [plan]);
@@ -141,6 +154,7 @@ export default function BudgetPanel(props: BudgetPanelProps) {
         每轮枚举「缺失簇 × 有效字体」的最小补丁，按
         <strong> 新增恢复簇数 / 新增对数 </strong>
         贪心选择，平局依次取较少新增对数、较前字体、较前场景/簇；每轮后重新计算恢复数。
+        被「禁止入链」排除的字体不作为补字对象。
         {useMeasuredCoverage ? '当前按实测覆盖计算。' : '当前按声明覆盖计算。'}
         本面板不修改原求解结果与字体范围。
       </p>
@@ -170,6 +184,13 @@ export default function BudgetPanel(props: BudgetPanelProps) {
           <strong>暂无有效字体</strong>
           <span className="alert-detail">
             请先在左侧添加至少一种范围有效的字体，补字方案才有承接对象。
+          </span>
+        </div>
+      ) : eligible.fonts.length === 0 ? (
+        <div className="alert mode">
+          <strong>全部有效字体均被「禁止入链」排除</strong>
+          <span className="alert-detail">
+            补字规划需要至少一种可入链的字体作为补丁承接对象；请先将某个字体改回「普通」或「必须入链」。
           </span>
         </div>
       ) : plan.initiallyMissing === 0 ? (

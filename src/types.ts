@@ -16,6 +16,14 @@ export interface FontFileInfo {
   parsedAt: string;
 }
 
+/**
+ * 字体的入链约束：
+ * - normal：普通，参与正常求解；
+ * - locked：必须入链（锁定），求解后必定出现在回退链中；
+ * - excluded：禁止入链（排除），求解前从候选中剔除。
+ */
+export type FontConstraint = 'normal' | 'locked' | 'excluded';
+
 /** 用户录入的字体条目（编辑态） */
 export interface FontSpec {
   id: string;
@@ -26,6 +34,11 @@ export interface FontSpec {
    * 注意：只保存解析出的区间元数据，File/ArrayBuffer 绝不上传、不持久化。
    */
   file: FontFileInfo | null;
+  /**
+   * 入链约束。约束随字体 id 保留：调整列表顺序、上传/清除字体文件、
+   * 切换「按实测覆盖求解」均不影响；仅对范围有效的字体生效。
+   */
+  constraint: FontConstraint;
 }
 
 /** 解析后的字体条目 */
@@ -67,6 +80,13 @@ export interface RangeDiff {
 /** 字素簇的承接状态 */
 export type ClusterStatus = 'covered' | 'missing' | 'free';
 
+/**
+ * 缺失细分（仅 status === 'missing' 时有意义）：
+ * - natural：自然缺失，任何有效字体都不覆盖；
+ * - constraint：约束导致缺失，候选字体全部被「禁止入链」排除。
+ */
+export type MissingKind = 'natural' | 'constraint';
+
 /** 单个字素簇的审计结果 */
 export interface ClusterAudit {
   index: number;
@@ -85,7 +105,14 @@ export interface ClusterAudit {
   /** 回退链中实际承接它的字体下标；null 表示缺失 */
   assigned: number | null;
   status: ClusterStatus;
-  /** 所有字体都不覆盖的码位（仅缺失时有值） */
+  /** 缺失细分；非缺失簇为 null */
+  missingKind: MissingKind | null;
+  /**
+   * 约束缺失时：解除「禁止入链」即可覆盖该簇的字体下标（相对有效字体列表）；
+   * 其余情况为空数组。
+   */
+  unblockFonts: number[];
+  /** 所有字体都不覆盖的码位（仅自然缺失时有值） */
   missingCodepoints: number[];
 }
 

@@ -1,4 +1,4 @@
-import type { ClusterAudit, ParsedFont, ScenarioClusterAudit } from '../types';
+import type { ClusterAudit, FontConstraint, ParsedFont, ScenarioClusterAudit } from '../types';
 import { countCodepoints } from './ranges';
 import { formatCodepoint } from './grapheme';
 import type { FailureScenario } from './resilience';
@@ -19,6 +19,8 @@ export interface ChainEntry {
   preference: number;
   /** 承接簇数（单场景：该场景；场景集：跨所有场景合计） */
   assignedClusters: number;
+  /** 用户锁定（必须入链）的字体 */
+  locked?: boolean;
 }
 
 /** 场景集模式的共享链条目：另含逐场景承接簇数 */
@@ -27,20 +29,53 @@ export interface ScenarioChainEntry extends ChainEntry {
   scenarioCounts: Record<string, number>;
 }
 
-export function buildCssExport(chain: ChainEntry[], generatedAt: string): string {
+/** 入链约束清单（按有效字体顺序的字体名） */
+export interface ConstraintSummary {
+  /** 必须入链（锁定） */
+  locked: string[];
+  /** 禁止入链（排除） */
+  excluded: string[];
+}
+
+export function buildCssExport(
+  chain: ChainEntry[],
+  generatedAt: string,
+  constraints?: ConstraintSummary,
+): string {
   const lines = [
     `/* 由 Unicode 字体回退链审计台生成 · ${generatedAt} */`,
     '/* 回退链（按优先级从高到低）：',
     ...chain.map(
-      (e, i) => `   ${i + 1}. "${e.name}" — 承接 ${e.assignedClusters} 个字素簇`,
+      (e, i) =>
+        `   ${i + 1}. "${e.name}" — 承接 ${e.assignedClusters} 个字素簇${e.locked ? '（必须入链）' : ''}`,
     ),
     '   缺失字素簇不在任何字体覆盖范围内，详见审计 JSON。',
+  ];
+  if (constraints && (constraints.locked.length > 0 || constraints.excluded.length > 0)) {
+    const parts: string[] = [];
+    if (constraints.locked.length > 0) {
+      parts.push(`必须入链 = ${constraints.locked.map((n) => `"${n}"`).join('、')}`);
+    }
+    if (constraints.excluded.length > 0) {
+      parts.push(`禁止入链 = ${constraints.excluded.map((n) => `"${n}"`).join('、')}`);
+    }
+    lines.push(`   入链约束：${parts.join('；')}`);
+  }
+  lines.push(
     '*/',
     '.audited-text {',
     `  font-family: ${buildFontFamily(chain.map((e) => e.name))};`,
     '}',
-  ];
+  );
   return lines.join('\n');
+}
+
+/** 单字体的入链约束条目（仅记录非「普通」约束） */
+export interface FontConstraintInfo {
+  name: string;
+  /** 原始偏好位次（0 = 最优先） */
+  preference: number;
+  constraint: FontConstraint;
 }
 
 /** 审计输入：单场景模式携带 text；场景集模式携带 scenarios 清单 */
@@ -57,6 +92,8 @@ export interface AuditInput {
   ignoreFormatCodepoints: boolean;
   /** 是否开启“按实测覆盖求解” */
   useMeasuredCoverage: boolean;
+  /** 非「普通」入链约束清单（锁定/排除），按有效字体顺序 */
+  fontConstraints: FontConstraintInfo[];
 }
 
 export interface AuditResultData {
@@ -78,6 +115,8 @@ function serializeFont(f: ParsedFont, i: number) {
   return {
     preference: i + 1,
     name: f.name,
+    /** 入链约束：normal 普通 / locked 必须入链 / excluded 禁止入链 */
+    constraint: f.constraint,
     ranges: f.rangesText,
     parsedRanges: f.error ? null : fmtRanges(f.ranges),
     declaredCodepointCount: f.error ? 0 : f.codepointCount,
@@ -134,6 +173,13 @@ function serializeCluster(
     codepoints: c.codepoints.map(formatCodepoint),
     requiredCodepoints: c.required.map(formatCodepoint),
     status: c.status,
+    // 缺失细分：natural 自然缺失 / constraint 约束导致缺失（仅缺失时输出）
+    ...(c.status === 'missing'
+      ? {
+          missingKind: c.missingKind ?? 'natural',
+          unblockFonts: c.unblockFonts.map((i) => validFonts[i].name),
+        }
+      : {}),
     assignedFont: fontName(c.assigned),
     candidateFonts: c.candidates.map((i) => validFonts[i].name),
     missingCodepoints: c.missingCodepoints.map(formatCodepoint),
@@ -146,6 +192,29 @@ function serializeChain(e: ChainEntry, i: number) {
     font: e.name,
     preference: e.preference + 1,
     assignedClusters: e.assignedClusters,
+    ...(e.locked ? { locked: true } : {}),
+  };
+}
+
+/** 入链约束清单的审计序列化（单文本与场景集共用） */
+function serializeConstraints(list: FontConstraintInfo[]) {
+  const pick = (kind: FontConstraint) =>
+    list
+      .filter((c) => c.constraint === kind)
+      .map((c) => ({ font: c.name, preference: c.preference + 1 }));
+  return { locked: pick('locked'), excluded: pick('excluded') };
+}
+
+/** 缺失簇的审计序列化（含缺失细分与可解除约束的字体） */
+function serializeMissing(c: ClusterAudit, validFonts: ParsedFont[], extra?: Record<string, unknown>) {
+  return {
+    index: c.index,
+    ...(extra ?? {}),
+    text: c.text,
+    kind: c.missingKind ?? 'natural',
+    codepoints: c.codepoints.map(formatCodepoint),
+    missingCodepoints: c.missingCodepoints.map(formatCodepoint),
+    unblockFonts: c.unblockFonts.map((i) => validFonts[i].name),
   };
 }
 
@@ -155,8 +224,12 @@ export function buildAuditReport(
   generatedAt: string,
 ) {
   const { validFonts } = result;
-  const covered = result.clusters.filter((c) => c.status !== 'missing').length;
-  const missing = result.clusters.length - covered;
+  const clusters = result.clusters;
+  const covered = clusters.filter((c) => c.status !== 'missing').length;
+  const missing = clusters.length - covered;
+  const constraintMissing = clusters.filter(
+    (c) => c.status === 'missing' && c.missingKind === 'constraint',
+  ).length;
 
   return {
     tool: 'unicode-font-fallback-audit',
@@ -170,6 +243,8 @@ export function buildAuditReport(
         ignoreFormatCodepoints: input.ignoreFormatCodepoints,
         useMeasuredCoverage: input.useMeasuredCoverage,
       },
+      /** 入链约束清单（仅非「普通」条目） */
+      constraints: serializeConstraints(input.fontConstraints),
       fonts: input.fonts.map(serializeFont),
     },
     result: {
@@ -177,23 +252,20 @@ export function buildAuditReport(
       solverExact: result.exact,
       objective: Number(result.objective.toFixed(9)),
       nodesExplored: result.nodesExplored,
-      graphemeCount: result.clusters.length,
+      graphemeCount: clusters.length,
       coveredCount: covered,
       missingCount: missing,
+      naturalMissingCount: missing - constraintMissing,
+      constraintMissingCount: constraintMissing,
       chain: result.chain.map(serializeChain),
       unselectedFonts: result.unselected.map((u) => ({
         font: u.name,
         preference: u.preference + 1,
       })),
-      clusters: result.clusters.map((c) => serializeCluster(c, validFonts)),
-      missing: result.clusters
+      clusters: clusters.map((c) => serializeCluster(c, validFonts)),
+      missing: clusters
         .filter((c) => c.status === 'missing')
-        .map((c) => ({
-          index: c.index,
-          text: c.text,
-          codepoints: c.codepoints.map(formatCodepoint),
-          missingCodepoints: c.missingCodepoints.map(formatCodepoint),
-        })),
+        .map((c) => serializeMissing(c, validFonts)),
     },
     css: `font-family: ${buildFontFamily(result.chain.map((e) => e.name))};`,
   };
@@ -240,6 +312,9 @@ export function buildScenarioSetReport(
 
   const total = result.clusters.length;
   const missingTotal = result.clusters.filter((c) => c.status === 'missing').length;
+  const constraintMissingTotal = result.clusters.filter(
+    (c) => c.status === 'missing' && c.missingKind === 'constraint',
+  ).length;
   const coveredTotal = total - missingTotal;
   const nonEmpty = result.scenarios.filter((s) => s.clusters.length > 0).length;
 
@@ -254,6 +329,8 @@ export function buildScenarioSetReport(
         ignoreFormatCodepoints: input.ignoreFormatCodepoints,
         useMeasuredCoverage: input.useMeasuredCoverage,
       },
+      /** 入链约束清单（仅非「普通」条目） */
+      constraints: serializeConstraints(input.fontConstraints),
       scenarios: input.scenarios.map((s) => ({ name: s.name, text: s.text })),
       fonts: input.fonts.map(serializeFont),
     },
@@ -267,11 +344,14 @@ export function buildScenarioSetReport(
       graphemeCount: total,
       coveredCount: coveredTotal,
       missingCount: missingTotal,
+      naturalMissingCount: missingTotal - constraintMissingTotal,
+      constraintMissingCount: constraintMissingTotal,
       sharedChain: result.chain.map((e, i) => ({
         order: i + 1,
         font: e.name,
         preference: e.preference + 1,
         assignedClusters: e.assignedClusters,
+        ...(e.locked ? { locked: true } : {}),
         perScenario: result.scenarios.map((s) => ({
           scenarioId: s.id,
           scenario: s.name,
@@ -284,6 +364,9 @@ export function buildScenarioSetReport(
       })),
       scenarios: result.scenarios.map((s) => {
         const m = s.clusters.filter((c) => c.status === 'missing').length;
+        const cm = s.clusters.filter(
+          (c) => c.status === 'missing' && c.missingKind === 'constraint',
+        ).length;
         const free = s.clusters.filter((c) => c.status === 'free').length;
         const n = s.clusters.length;
         // 覆盖率：非缺失簇（含格式簇）占比；空场景为 null（保留但不参与统计）
@@ -294,6 +377,8 @@ export function buildScenarioSetReport(
           graphemeCount: n,
           coveredCount: n - m,
           missingCount: m,
+          naturalMissingCount: m - cm,
+          constraintMissingCount: cm,
           freeCount: free,
           coverageRate,
           chain: s.chainCounts.map((cc, k) => {
@@ -313,13 +398,13 @@ export function buildScenarioSetReport(
           ),
           missing: s.clusters
             .filter((c) => c.status === 'missing')
-            .map((c) => ({
-              index: c.localIndex,
-              globalIndex: c.index,
-              text: c.text,
-              codepoints: c.codepoints.map(formatCodepoint),
-              missingCodepoints: c.missingCodepoints.map(formatCodepoint),
-            })),
+            .map((c) =>
+              serializeMissing(c, validFonts, {
+                globalIndex: c.index,
+                // 场景内局部下标覆盖全局下标语义，与历史导出保持一致
+                index: c.localIndex,
+              }),
+            ),
         };
       }),
     },

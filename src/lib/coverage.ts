@@ -180,6 +180,8 @@ export function toScenarioClusterAudit(
   assigned: number | null,
   status: ScenarioClusterAudit['status'],
   missingCodepoints: number[],
+  missingKind: ScenarioClusterAudit['missingKind'] = null,
+  unblockFonts: number[] = [],
 ): ScenarioClusterAudit {
   return {
     index: c.index,
@@ -191,6 +193,8 @@ export function toScenarioClusterAudit(
     free: c.free,
     assigned,
     status,
+    missingKind,
+    unblockFonts,
     missingCodepoints,
     scenarioId: c.scenarioId,
     localIndex: c.localIndex,

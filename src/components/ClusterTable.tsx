@@ -3,7 +3,12 @@ import { displayCluster, formatCodepoint } from '../lib/grapheme';
 
 const ROW_LIMIT = 300;
 
-export type ClusterFilter = 'all' | 'missing' | `font:${number}`;
+export type ClusterFilter =
+  | 'all'
+  | 'missing'
+  | 'missing-natural'
+  | 'missing-constraint'
+  | `font:${number}`;
 
 interface ClusterTableProps {
   clusters: ClusterAudit[];
@@ -28,10 +33,21 @@ export default function ClusterTable({
   const filtered = clusters.filter((c) => {
     if (filter === 'all') return true;
     if (filter === 'missing') return c.status === 'missing';
+    if (filter === 'missing-natural') {
+      return c.status === 'missing' && c.missingKind !== 'constraint';
+    }
+    if (filter === 'missing-constraint') {
+      return c.status === 'missing' && c.missingKind === 'constraint';
+    }
     const idx = Number(filter.slice(5));
     return c.assigned === idx;
   });
   const shown = filtered.slice(0, ROW_LIMIT);
+  const missingTotal = clusters.filter((c) => c.status === 'missing').length;
+  const naturalTotal = clusters.filter(
+    (c) => c.status === 'missing' && c.missingKind !== 'constraint',
+  ).length;
+  const constraintTotal = missingTotal - naturalTotal;
   const rowNumber = (c: ClusterAudit) =>
     localNumbering ? (c as ScenarioClusterAudit).localIndex + 1 : c.index + 1;
   const rowKey = (c: ClusterAudit) => {
@@ -52,9 +68,9 @@ export default function ClusterTable({
           onChange={(e) => onFilterChange(e.target.value as ClusterFilter)}
         >
           <option value="all">全部（{clusters.length}）</option>
-          <option value="missing">
-            仅缺失（{clusters.filter((c) => c.status === 'missing').length}）
-          </option>
+          <option value="missing">仅缺失（{missingTotal}）</option>
+          <option value="missing-natural">仅自然缺失（{naturalTotal}）</option>
+          <option value="missing-constraint">仅约束缺失（{constraintTotal}）</option>
           {validFonts.map((f, i) => (
             <option key={f.id} value={`font:${i}`}>
               由「{f.name || '(未命名)'}」承接（{clusters.filter((c) => c.assigned === i).length}）
@@ -77,8 +93,13 @@ export default function ClusterTable({
           <tbody>
             {shown.map((c) => {
               const label = scenarioLabel ? scenarioLabel(c as ScenarioClusterAudit) : null;
+              const constraintMissing =
+                c.status === 'missing' && c.missingKind === 'constraint';
               return (
-                <tr key={rowKey(c)} className={`row-${c.status}`}>
+                <tr
+                  key={rowKey(c)}
+                  className={constraintMissing ? 'row-constraint' : `row-${c.status}`}
+                >
                   <td className="mono muted">{rowNumber(c)}</td>
                   {scenarioLabel && (
                     <td className="small muted scenario-col">{label ?? '—'}</td>
@@ -91,7 +112,11 @@ export default function ClusterTable({
                   </td>
                   <td>
                     {c.status === 'missing' ? (
-                      <span className="badge bad">缺失</span>
+                      constraintMissing ? (
+                        <span className="badge warn">约束缺失</span>
+                      ) : (
+                        <span className="badge bad">缺失</span>
+                      )
                     ) : c.assigned !== null ? (
                       <span className="badge ok">{validFonts[c.assigned].name || '(未命名)'}</span>
                     ) : (
@@ -99,9 +124,18 @@ export default function ClusterTable({
                     )}
                   </td>
                   <td className="small note">
-                    {c.status === 'missing' && (
-                      <>无字体覆盖 {c.missingCodepoints.map(formatCodepoint).join(' ')}</>
-                    )}
+                    {c.status === 'missing' &&
+                      (constraintMissing ? (
+                        <>
+                          仅被排除字体覆盖：
+                          {c.unblockFonts
+                            .map((i) => validFonts[i]?.name || '(未命名)')
+                            .join('、')}
+                          （解除「禁止入链」即可恢复）
+                        </>
+                      ) : (
+                        <>无字体覆盖 {c.missingCodepoints.map(formatCodepoint).join(' ')}</>
+                      ))}
                     {c.status === 'covered' && (
                       <>链中首个可覆盖字体（共 {c.candidates.length} 种候选）</>
                     )}

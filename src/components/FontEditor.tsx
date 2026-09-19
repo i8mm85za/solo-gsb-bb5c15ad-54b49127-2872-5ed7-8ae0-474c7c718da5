@@ -1,7 +1,14 @@
 import { useRef } from 'react';
-import type { FontSpec, ParsedFont, RangeDiff } from '../types';
+import type { FontConstraint, FontSpec, ParsedFont, RangeDiff } from '../types';
 import { countCodepoints, formatRangesCompact } from '../lib/ranges';
 import { formatCodepoint } from '../lib/grapheme';
+
+/** 入链约束三态选项（随字体 id 保留，排序与声明/实测切换不影响） */
+const CONSTRAINT_OPTIONS: { value: FontConstraint; label: string; hint: string }[] = [
+  { value: 'normal', label: '普通', hint: '正常参与求解，由求解器决定是否入链' },
+  { value: 'locked', label: '🔒 必须入链', hint: '锁定：求解后必定出现在回退链中，即使不承接任何字素簇' },
+  { value: 'excluded', label: '🚫 禁止入链', hint: '排除：求解前从候选中剔除；仅能被它覆盖的簇会标记为「约束缺失」' },
+];
 
 interface FontEditorProps {
   fonts: FontSpec[];
@@ -110,7 +117,12 @@ export default function FontEditor({
                 }
               : null;
           return (
-            <div className={`font-row${activeError ? ' has-error' : ''}`} key={f.id}>
+            <div
+              className={`font-row${activeError ? ' has-error' : ''}${
+                f.constraint !== 'normal' ? ` constraint-${f.constraint}` : ''
+              }`}
+              key={f.id}
+            >
               <div className="font-order" title="偏好顺序（1 = 最优先）">
                 {i + 1}
               </div>
@@ -135,6 +147,32 @@ export default function FontEditor({
                     声明范围覆盖 {p.codepointCount.toLocaleString()} 个码位 · {p.ranges.length} 段
                   </div>
                 ) : null}
+
+                {/* ---- 入链约束（普通 / 必须入链 / 禁止入链） ---- */}
+                <div className="constraint-row">
+                  <span className="constraint-label muted small">入链约束</span>
+                  <div className="constraint-group" role="group" aria-label="入链约束">
+                    {CONSTRAINT_OPTIONS.map((opt) => (
+                      <button
+                        key={opt.value}
+                        type="button"
+                        className={`constraint-btn${
+                          f.constraint === opt.value ? ` active ${opt.value}` : ''
+                        }`}
+                        title={opt.hint}
+                        onClick={() => onUpdate(f.id, { constraint: opt.value })}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                  {f.constraint === 'locked' && (
+                    <span className="muted small">求解后必定入链</span>
+                  )}
+                  {f.constraint === 'excluded' && (
+                    <span className="muted small">求解前剔除，不入链</span>
+                  )}
+                </div>
 
                 {/* ---- 本地字体文件 ---- */}
                 <div className="file-row">

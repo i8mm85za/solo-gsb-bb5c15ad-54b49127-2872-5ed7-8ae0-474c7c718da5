@@ -2,8 +2,8 @@
  * 单字体失效韧性分析。
  *
  * 对当前最优回退链中的每种字体，模拟其不可用（从有效字体列表中移除），
- * 在保持原始偏好顺序与当前声明/实测覆盖模式的前提下重新求解回退链，
- * 并对比失效前后每个字素簇的承接结果：
+ * 在保持原始偏好顺序、当前声明/实测覆盖模式与入链约束（锁定/排除）
+ * 的前提下重新求解回退链，并对比失效前后每个字素簇的承接结果：
  *   - 新增缺失：原本被覆盖、失效后无任何字体可承接的簇；
  *   - 改接：原本由某字体承接、失效后改由链中其他字体承接的簇。
  *
@@ -85,6 +85,10 @@ export interface ResilienceInput {
   baselineClusters: ScenarioClusterAudit[];
   /** 基线回退链（原始有效字体下标，按偏好顺序） */
   baselineChain: number[];
+  /** 必须入链（锁定）的字体下标（原始有效字体空间）；失效字体外其余保持锁定 */
+  locked?: number[];
+  /** 禁止入链（排除）的字体下标（原始有效字体空间），重解时保持排除 */
+  excluded?: number[];
 }
 
 /**
@@ -100,6 +104,8 @@ export function analyzeSingleFontFailure(input: ResilienceInput): FailureScenari
     lengthPriority,
     baselineClusters,
     baselineChain,
+    locked,
+    excluded,
   } = input;
 
   const scenarios: FailureScenario[] = [];
@@ -112,6 +118,13 @@ export function analyzeSingleFontFailure(input: ResilienceInput): FailureScenari
     }
     const remainingFonts = remaining.map((i) => validFonts[i]);
 
+    // 入链约束映射到剩余字体空间（失效字体自身除外）
+    const toRemaining = (indices: number[] | undefined) =>
+      (indices ?? [])
+        .filter((f) => f !== failed)
+        .map((f) => remaining.indexOf(f))
+        .filter((i) => i >= 0);
+
     // 覆盖模式与求解偏好均与基线一致（effectiveRanges 已随声明/实测开关确定）
     const analysis = analyzeGroupedCoverage(groups, remainingFonts, ignoreFormat);
     const solution = solveFallbackChain({
@@ -119,6 +132,8 @@ export function analyzeSingleFontFailure(input: ResilienceInput): FailureScenari
       preference: remaining.map((i) => preference[i]),
       patterns: analysis.patterns,
       lengthPriority,
+      locked: toRemaining(locked),
+      excluded: toRemaining(excluded),
     });
 
     // 求解结果映射回原始下标空间
