@@ -285,6 +285,76 @@ code {
   color: var(--bad);
 }
 
+.font-msg.warn {
+  color: var(--warn);
+}
+
+.font-msg.locked-hint {
+  color: var(--accent);
+}
+
+/* ---- 入链约束（锁定 / 排除） ---- */
+.constraint-summary {
+  margin: 0 0 10px;
+  padding: 6px 10px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+}
+
+.constraint-picker {
+  display: inline-flex;
+  align-self: flex-start;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg);
+}
+
+.constraint-option {
+  padding: 2px 10px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s;
+}
+
+.constraint-option:hover {
+  color: var(--text);
+}
+
+.constraint-option.active.normal {
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+.constraint-option.active.locked {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.constraint-option.active.excluded {
+  background: var(--bad-soft);
+  color: var(--bad);
+  font-weight: 600;
+}
+
+.font-row.is-excluded {
+  border-style: dashed;
+  opacity: 0.72;
+}
+
+.font-row.is-locked {
+  border-color: rgba(88, 166, 255, 0.55);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
 .font-actions {
   display: flex;
   flex-direction: column;
@@ -541,6 +611,11 @@ code {
   border: 1px solid rgba(88, 166, 255, 0.4);
 }
 
+.alert.warn {
+  background: rgba(210, 153, 34, 0.12);
+  border: 1px solid rgba(210, 153, 34, 0.45);
+}
+
 .alert-detail {
   color: var(--muted);
   font-size: 12px;
@@ -557,6 +632,12 @@ code {
   color: var(--bad);
   text-align: center;
   font-size: 14px;
+}
+
+.missing-chip.constrained {
+  background: rgba(210, 153, 34, 0.12);
+  border-color: rgba(210, 153, 34, 0.5);
+  color: var(--warn);
 }
 
 /* ---- 回退链 ---- */
@@ -813,6 +894,10 @@ code {
   background: var(--bad-soft);
 }
 
+.row-missing.row-constrained {
+  background: rgba(210, 153, 34, 0.08);
+}
+
 .glyph-cell {
   font-size: 18px;
   min-width: 40px;
@@ -854,6 +939,18 @@ code {
   background: var(--bad-soft);
   color: var(--bad);
   border: 1px solid rgba(248, 81, 73, 0.4);
+}
+
+.badge.warn {
+  background: rgba(210, 153, 34, 0.12);
+  color: var(--warn);
+  border: 1px solid rgba(210, 153, 34, 0.45);
+}
+
+.badge.locked-badge {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: 1px solid rgba(88, 166, 255, 0.4);
 }
 
 .badge.muted-badge {

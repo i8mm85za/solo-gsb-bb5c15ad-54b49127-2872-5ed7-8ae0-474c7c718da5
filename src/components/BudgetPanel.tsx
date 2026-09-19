@@ -21,6 +21,8 @@ interface BudgetPanelProps {
   mode: 'single' | 'set';
   ignoreFormatCodepoints: boolean;
   useMeasuredCoverage: boolean;
+  /** 被「禁止入链」排除的有效字体下标：不作为补字承接对象 */
+  excludedFontIndices?: ReadonlySet<number>;
 }
 
 const DEFAULT_BUDGET = 50;
@@ -74,11 +76,28 @@ export default function BudgetPanel(props: BudgetPanelProps) {
     mode,
     ignoreFormatCodepoints,
     useMeasuredCoverage,
+    excludedFontIndices,
   } = props;
 
   const [budgetText, setBudgetText] = useState(String(DEFAULT_BUDGET));
   const parsedBudget = Number.parseInt(budgetText, 10);
   const budget = Number.isFinite(parsedBudget) && parsedBudget > 0 ? Math.floor(parsedBudget) : 0;
+
+  // 补字承接对象：剔除被「禁止入链」的字体（它们无法进入回退链，补了也不生效）
+  const activeFonts = useMemo(
+    () =>
+      excludedFontIndices && excludedFontIndices.size > 0
+        ? validFonts.filter((_, i) => !excludedFontIndices.has(i))
+        : validFonts,
+    [validFonts, excludedFontIndices],
+  );
+  const activePreference = useMemo(
+    () =>
+      excludedFontIndices && excludedFontIndices.size > 0
+        ? preference.filter((_, i) => !excludedFontIndices.has(i))
+        : preference,
+    [preference, excludedFontIndices],
+  );
 
   // 单场景模式的簇不带场景归属字段，补齐为唯一场景的 id 与场景内序号
   const planClusters: ScenarioClusterAudit[] = useMemo(() => {
@@ -97,12 +116,12 @@ export default function BudgetPanel(props: BudgetPanelProps) {
     () =>
       planGlyphBudget({
         clusters: planClusters,
-        fonts: validFonts,
-        preference,
+        fonts: activeFonts,
+        preference: activePreference,
         scenarios,
         budget,
       }),
-    [planClusters, validFonts, preference, scenarios, budget],
+    [planClusters, activeFonts, activePreference, scenarios, budget],
   );
 
   const generatedAt = useMemo(() => new Date().toISOString(), [plan]);
@@ -142,6 +161,9 @@ export default function BudgetPanel(props: BudgetPanelProps) {
         <strong> 新增恢复簇数 / 新增对数 </strong>
         贪心选择，平局依次取较少新增对数、较前字体、较前场景/簇；每轮后重新计算恢复数。
         {useMeasuredCoverage ? '当前按实测覆盖计算。' : '当前按声明覆盖计算。'}
+        {excludedFontIndices && excludedFontIndices.size > 0
+          ? '被「禁止入链」排除的字体不作为补字承接对象。'
+          : ''}
         本面板不修改原求解结果与字体范围。
       </p>
 
@@ -165,11 +187,13 @@ export default function BudgetPanel(props: BudgetPanelProps) {
         {budgetInvalid && <span className="budget-error small">请输入不小于 0 的整数</span>}
       </div>
 
-      {validFonts.length === 0 ? (
+      {activeFonts.length === 0 ? (
         <div className="alert mode">
-          <strong>暂无有效字体</strong>
+          <strong>暂无可补字的有效字体</strong>
           <span className="alert-detail">
-            请先在左侧添加至少一种范围有效的字体，补字方案才有承接对象。
+            {validFonts.length > 0
+              ? '全部有效字体均被「禁止入链」排除，无法作为补字承接对象；请先解除排除或添加字体。'
+              : '请先在左侧添加至少一种范围有效的字体，补字方案才有承接对象。'}
           </span>
         </div>
       ) : plan.initiallyMissing === 0 ? (

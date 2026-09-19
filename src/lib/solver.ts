@@ -9,9 +9,15 @@
  *   λ = lengthPriority（1 = 完全链长优先，0 = 完全顺序优先）
  * 总成本为所选字体成本之和，越小越好。
  *
+ * 入链约束（锁定/排除）：
+ *   - excluded（禁止入链）的字体先从全部需求模式中剔除，剔除后才为空的
+ *     模式记为不可满足（由调用方进一步区分自然缺失 / 约束导致缺失）；
+ *   - locked（必须入链）的字体无条件入选并先覆盖其可承接的模式，
+ *     求解器随后只优化其余字体。
+ *
  * 算法：
  *   1. 无可覆盖字体的模式直接记为不可满足（缺失）；
- *   2. 唯一候选字体强制入选；
+ *   2. 锁定字体与唯一候选字体强制入选；
  *   3. 支配约简（覆盖集真超集且成本不更高的字体淘汰被支配者）；
  *   4. 贪心 + 删除/交换局部搜索得到优质 incumbent；
  *   5. 分支定界求精确最优（节点预算内）；超预算或规模过大时退回启发式结果。
@@ -28,6 +34,10 @@ export interface SolveInput {
   lengthPriority: number;
   /** 分支定界节点预算 */
   nodeBudget?: number;
+  /** 必须入链（锁定）的字体下标；与 excluded 互斥（冲突时排除优先） */
+  locked?: number[];
+  /** 禁止入链（排除）的字体下标：从所有需求模式中剔除 */
+  excluded?: number[];
 }
 
 export interface SolveOutput {
@@ -43,6 +53,8 @@ export interface SolveOutput {
   nodesExplored: number;
   /** 被唯一候选强制的字体 */
   forced: number[];
+  /** 实际入链的锁定字体（已剔除与 excluded 冲突及越界项） */
+  locked: number[];
 }
 
 const EPS = 1e-9;
@@ -58,9 +70,23 @@ function popcount(x: bigint): number {
 }
 
 export function solveFallbackChain(input: SolveInput): SolveOutput {
-  const { fontCount, preference, patterns } = input;
+  const { fontCount, preference } = input;
   const nodeBudget = input.nodeBudget ?? 120_000;
   const lp = Math.min(1, Math.max(0, input.lengthPriority));
+
+  // ---- 入链约束：先剔除禁用候选，再锁定必须入链的字体 ----
+  const excludedSet = new Set(
+    (input.excluded ?? []).filter((f) => f >= 0 && f < fontCount),
+  );
+  const locked = [
+    ...new Set(
+      (input.locked ?? []).filter((f) => f >= 0 && f < fontCount && !excludedSet.has(f)),
+    ),
+  ];
+  // 剔除被排除字体后的需求模式（约束导致为空的模式按不可满足处理）
+  const patterns = excludedSet.size
+    ? input.patterns.map((fs) => fs.filter((f) => !excludedSet.has(f)))
+    : input.patterns;
 
   const maxCount = Math.max(1, fontCount);
   const maxPref = Math.max(1, (fontCount * (fontCount + 1)) / 2);
@@ -84,9 +110,15 @@ export function solveFallbackChain(input: SolveInput): SolveOutput {
     for (const f of patterns[p]) fontPatterns[f].push(p);
   }
 
-  // 唯一候选强制入选
+  // 锁定字体无条件强制入选（先纳入目标链，再优化其余字体）
   const forcedSet = new Set<number>();
   const covered = new Set<number>();
+  for (const f of locked) {
+    forcedSet.add(f);
+    for (const q of fontPatterns[f]) covered.add(q);
+  }
+
+  // 唯一候选强制入选
   for (const p of workable) {
     if (patterns[p].length === 1) {
       const f = patterns[p][0];
@@ -149,6 +181,7 @@ export function solveFallbackChain(input: SolveInput): SolveOutput {
       objective,
       nodesExplored: nodes,
       forced: [...forcedSet],
+      locked,
     };
   };
 

@@ -85,10 +85,16 @@ export interface ResilienceInput {
   baselineClusters: ScenarioClusterAudit[];
   /** 基线回退链（原始有效字体下标，按偏好顺序） */
   baselineChain: number[];
+  /** 必须入链（锁定）的字体下标（原始有效字体下标空间） */
+  locked?: number[];
+  /** 禁止入链（排除）的字体下标（原始有效字体下标空间） */
+  excluded?: number[];
 }
 
 /**
  * 逐一模拟链中字体失效并重解。
+ * 重解时保持当前入链约束：被排除字体仍然剔除，其余锁定字体仍然强制入链
+ * （若失效字体本身被锁定，则该锁定随其失效一并移除）。
  * 返回的风险卡片已按「新增缺失数降序 → 改接簇数降序 → 偏好位次升序」排序。
  */
 export function analyzeSingleFontFailure(input: ResilienceInput): FailureScenario[] {
@@ -101,6 +107,8 @@ export function analyzeSingleFontFailure(input: ResilienceInput): FailureScenari
     baselineClusters,
     baselineChain,
   } = input;
+  const locked = input.locked ?? [];
+  const excluded = input.excluded ?? [];
 
   const scenarios: FailureScenario[] = [];
 
@@ -111,6 +119,14 @@ export function analyzeSingleFontFailure(input: ResilienceInput): FailureScenari
       if (i !== failed) remaining.push(i);
     }
     const remainingFonts = remaining.map((i) => validFonts[i]);
+    // 约束映射到重解下标空间（失效字体的锁定随之移除）
+    const remappedLocked = locked
+      .filter((f) => f !== failed)
+      .map((f) => remaining.indexOf(f))
+      .filter((i) => i >= 0);
+    const remappedExcluded = excluded
+      .map((f) => remaining.indexOf(f))
+      .filter((i) => i >= 0);
 
     // 覆盖模式与求解偏好均与基线一致（effectiveRanges 已随声明/实测开关确定）
     const analysis = analyzeGroupedCoverage(groups, remainingFonts, ignoreFormat);
@@ -119,6 +135,8 @@ export function analyzeSingleFontFailure(input: ResilienceInput): FailureScenari
       preference: remaining.map((i) => preference[i]),
       patterns: analysis.patterns,
       lengthPriority,
+      locked: remappedLocked,
+      excluded: remappedExcluded,
     });
 
     // 求解结果映射回原始下标空间

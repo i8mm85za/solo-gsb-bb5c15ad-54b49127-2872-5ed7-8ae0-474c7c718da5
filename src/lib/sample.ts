@@ -16,6 +16,7 @@ Arabic: مرحبا بالعالم`;
  * - 前四种分别覆盖拉丁 / 汉字 / 表情 / 阿拉伯文，构成最短可行链；
  * - Backup Sans 与前两者重叠，应被求解器判定为冗余而丢弃；
  * - 𠮷(U+20BB7)、𡈽(U+2123D) 不在任何范围内，用于演示“缺失”标记。
+ * 所有样例字体的入链约束均为「普通」，可在编辑器中改为锁定/排除。
  */
 export function sampleFonts(): FontSpec[] {
   return [
@@ -24,5 +25,5 @@ export function sampleFonts(): FontSpec[] {
     { name: 'Emoji Color', rangesText: 'U+200D, U+FE0F, U+2615, U+1F1E6-1F1FF, U+1F300-1FAFF, U+2700-27BF' },
     { name: 'Arabic Naskh', rangesText: 'U+0600-06FF, U+0750-077F, U+FE70-FEFF' },
     { name: 'Backup Sans', rangesText: 'U+0020-007E, U+4E00-9FFF' },
-  ].map((f) => ({ id: uid(), ...f, file: null }));
+  ].map((f) => ({ id: uid(), ...f, file: null, constraint: 'normal' as const }));
 }

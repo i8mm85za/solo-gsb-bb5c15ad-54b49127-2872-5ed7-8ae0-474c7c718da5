@@ -19,6 +19,8 @@ export interface ChainEntry {
   preference: number;
   /** 承接簇数（单场景：该场景；场景集：跨所有场景合计） */
   assignedClusters: number;
+  /** 是否锁定（必须入链） */
+  locked?: boolean;
 }
 
 /** 场景集模式的共享链条目：另含逐场景承接簇数 */
@@ -27,13 +29,33 @@ export interface ScenarioChainEntry extends ChainEntry {
   scenarioCounts: Record<string, number>;
 }
 
-export function buildCssExport(chain: ChainEntry[], generatedAt: string): string {
+export function buildCssExport(
+  chain: ChainEntry[],
+  generatedAt: string,
+  /** 入链约束说明：被排除（禁止入链）的字体名；锁定标记取自链条目 */
+  constraints?: { excludedNames: string[] },
+): string {
+  const lockedNames = chain.filter((e) => e.locked).map((e) => e.name);
+  const constraintLine =
+    lockedNames.length > 0 || (constraints?.excludedNames.length ?? 0) > 0
+      ? [
+          '   入链约束：' +
+            [
+              ...lockedNames.map((n) => `锁定 "${cssStringEscape(n)}"（必须入链）`),
+              ...(constraints?.excludedNames ?? []).map(
+                (n) => `"${cssStringEscape(n)}" 禁止入链`,
+              ),
+            ].join('；'),
+        ]
+      : [];
   const lines = [
     `/* 由 Unicode 字体回退链审计台生成 · ${generatedAt} */`,
     '/* 回退链（按优先级从高到低）：',
     ...chain.map(
-      (e, i) => `   ${i + 1}. "${e.name}" — 承接 ${e.assignedClusters} 个字素簇`,
+      (e, i) =>
+        `   ${i + 1}. "${e.name}" — 承接 ${e.assignedClusters} 个字素簇${e.locked ? ' · 锁定（必须入链）' : ''}`,
     ),
+    ...constraintLine,
     '   缺失字素簇不在任何字体覆盖范围内，详见审计 JSON。',
     '*/',
     '.audited-text {',
@@ -78,6 +100,8 @@ function serializeFont(f: ParsedFont, i: number) {
   return {
     preference: i + 1,
     name: f.name,
+    /** 入链约束：normal / locked（必须入链）/ excluded（禁止入链） */
+    constraint: f.constraint,
     ranges: f.rangesText,
     parsedRanges: f.error ? null : fmtRanges(f.ranges),
     declaredCodepointCount: f.error ? 0 : f.codepointCount,
@@ -134,6 +158,13 @@ function serializeCluster(
     codepoints: c.codepoints.map(formatCodepoint),
     requiredCodepoints: c.required.map(formatCodepoint),
     status: c.status,
+    /** 缺失根因：natural = 自然缺失；constraint = 约束导致缺失；非缺失为 null */
+    missingCause: c.missingCause,
+    /** 约束导致缺失时：解除「禁止入链」即可承接该簇的字体 */
+    unblockFonts:
+      c.missingCause === 'constraint'
+        ? c.unblockFonts.map((i) => validFonts[i].name)
+        : [],
     assignedFont: fontName(c.assigned),
     candidateFonts: c.candidates.map((i) => validFonts[i].name),
     missingCodepoints: c.missingCodepoints.map(formatCodepoint),
@@ -146,6 +177,34 @@ function serializeChain(e: ChainEntry, i: number) {
     font: e.name,
     preference: e.preference + 1,
     assignedClusters: e.assignedClusters,
+    locked: e.locked === true,
+  };
+}
+
+/** 入链约束清单（锁定/排除），由有效字体的 constraint 派生；两种导出形态共用 */
+function serializeConstraints(input: AuditInput, validFonts: ParsedFont[]) {
+  const locked: { font: string; preference: number }[] = [];
+  const excluded: { font: string; preference: number }[] = [];
+  validFonts.forEach((f, i) => {
+    const entry = { font: f.name, preference: (input.validFontOrder[i] ?? i) + 1 };
+    if (f.constraint === 'locked') locked.push(entry);
+    else if (f.constraint === 'excluded') excluded.push(entry);
+  });
+  return { locked, excluded };
+}
+
+/** 缺失簇的序列化条目（含根因与可解除缺失的字体） */
+function serializeMissing(c: ClusterAudit, validFonts: ParsedFont[]) {
+  return {
+    index: c.index,
+    text: c.text,
+    codepoints: c.codepoints.map(formatCodepoint),
+    missingCodepoints: c.missingCodepoints.map(formatCodepoint),
+    cause: c.missingCause ?? 'natural',
+    unblockFonts:
+      c.missingCause === 'constraint'
+        ? c.unblockFonts.map((i) => validFonts[i].name)
+        : [],
   };
 }
 
@@ -155,8 +214,12 @@ export function buildAuditReport(
   generatedAt: string,
 ) {
   const { validFonts } = result;
-  const covered = result.clusters.filter((c) => c.status !== 'missing').length;
-  const missing = result.clusters.length - covered;
+  const missingClusters = result.clusters.filter((c) => c.status === 'missing');
+  const missing = missingClusters.length;
+  const covered = result.clusters.length - missing;
+  const constraintMissing = missingClusters.filter(
+    (c) => c.missingCause === 'constraint',
+  ).length;
 
   return {
     tool: 'unicode-font-fallback-audit',
@@ -180,20 +243,18 @@ export function buildAuditReport(
       graphemeCount: result.clusters.length,
       coveredCount: covered,
       missingCount: missing,
+      /** 缺失根因拆分：自然缺失 + 约束导致缺失（合计 = missingCount） */
+      naturalMissingCount: missing - constraintMissing,
+      constraintMissingCount: constraintMissing,
+      /** 本次求解生效的入链约束清单 */
+      constraints: serializeConstraints(input, validFonts),
       chain: result.chain.map(serializeChain),
       unselectedFonts: result.unselected.map((u) => ({
         font: u.name,
         preference: u.preference + 1,
       })),
       clusters: result.clusters.map((c) => serializeCluster(c, validFonts)),
-      missing: result.clusters
-        .filter((c) => c.status === 'missing')
-        .map((c) => ({
-          index: c.index,
-          text: c.text,
-          codepoints: c.codepoints.map(formatCodepoint),
-          missingCodepoints: c.missingCodepoints.map(formatCodepoint),
-        })),
+      missing: missingClusters.map((c) => serializeMissing(c, validFonts)),
     },
     css: `font-family: ${buildFontFamily(result.chain.map((e) => e.name))};`,
   };
@@ -239,8 +300,12 @@ export function buildScenarioSetReport(
   const { validFonts } = result;
 
   const total = result.clusters.length;
-  const missingTotal = result.clusters.filter((c) => c.status === 'missing').length;
+  const missingClustersAll = result.clusters.filter((c) => c.status === 'missing');
+  const missingTotal = missingClustersAll.length;
   const coveredTotal = total - missingTotal;
+  const constraintMissingTotal = missingClustersAll.filter(
+    (c) => c.missingCause === 'constraint',
+  ).length;
   const nonEmpty = result.scenarios.filter((s) => s.clusters.length > 0).length;
 
   return {
@@ -267,11 +332,17 @@ export function buildScenarioSetReport(
       graphemeCount: total,
       coveredCount: coveredTotal,
       missingCount: missingTotal,
+      /** 缺失根因拆分：自然缺失 + 约束导致缺失（合计 = missingCount） */
+      naturalMissingCount: missingTotal - constraintMissingTotal,
+      constraintMissingCount: constraintMissingTotal,
+      /** 本次求解生效的入链约束清单（与共享链同属全局唯一） */
+      constraints: serializeConstraints(input, validFonts),
       sharedChain: result.chain.map((e, i) => ({
         order: i + 1,
         font: e.name,
         preference: e.preference + 1,
         assignedClusters: e.assignedClusters,
+        locked: e.locked === true,
         perScenario: result.scenarios.map((s) => ({
           scenarioId: s.id,
           scenario: s.name,
@@ -283,7 +354,11 @@ export function buildScenarioSetReport(
         preference: u.preference + 1,
       })),
       scenarios: result.scenarios.map((s) => {
-        const m = s.clusters.filter((c) => c.status === 'missing').length;
+        const missingInScenario = s.clusters.filter((c) => c.status === 'missing');
+        const m = missingInScenario.length;
+        const constraintM = missingInScenario.filter(
+          (c) => c.missingCause === 'constraint',
+        ).length;
         const free = s.clusters.filter((c) => c.status === 'free').length;
         const n = s.clusters.length;
         // 覆盖率：非缺失簇（含格式簇）占比；空场景为 null（保留但不参与统计）
@@ -294,6 +369,8 @@ export function buildScenarioSetReport(
           graphemeCount: n,
           coveredCount: n - m,
           missingCount: m,
+          naturalMissingCount: m - constraintM,
+          constraintMissingCount: constraintM,
           freeCount: free,
           coverageRate,
           chain: s.chainCounts.map((cc, k) => {
@@ -311,15 +388,18 @@ export function buildScenarioSetReport(
               scenarioLocalIndex: c.localIndex,
             }),
           ),
-          missing: s.clusters
-            .filter((c) => c.status === 'missing')
-            .map((c) => ({
-              index: c.localIndex,
-              globalIndex: c.index,
-              text: c.text,
-              codepoints: c.codepoints.map(formatCodepoint),
-              missingCodepoints: c.missingCodepoints.map(formatCodepoint),
-            })),
+          missing: missingInScenario.map((c) => ({
+            index: c.localIndex,
+            globalIndex: c.index,
+            text: c.text,
+            codepoints: c.codepoints.map(formatCodepoint),
+            missingCodepoints: c.missingCodepoints.map(formatCodepoint),
+            cause: c.missingCause ?? 'natural',
+            unblockFonts:
+              c.missingCause === 'constraint'
+                ? c.unblockFonts.map((i) => validFonts[i].name)
+                : [],
+          })),
         };
       }),
     },
@@ -362,6 +442,8 @@ export function buildResilienceReport(
       lengthPriority: input.lengthPriority,
       ignoreFormatCodepoints: input.ignoreFormatCodepoints,
       useMeasuredCoverage: input.useMeasuredCoverage,
+      /** 重解时生效的入链约束（与基线求解一致） */
+      constraints: serializeConstraints(input, validFonts),
       ...(input.mode === 'set'
         ? { scenarios: input.scenarios.map((s) => s.name) }
         : {}),

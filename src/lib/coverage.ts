@@ -180,6 +180,8 @@ export function toScenarioClusterAudit(
   assigned: number | null,
   status: ScenarioClusterAudit['status'],
   missingCodepoints: number[],
+  missingCause: ScenarioClusterAudit['missingCause'] = null,
+  unblockFonts: number[] = [],
 ): ScenarioClusterAudit {
   return {
     index: c.index,
@@ -192,6 +194,8 @@ export function toScenarioClusterAudit(
     assigned,
     status,
     missingCodepoints,
+    missingCause,
+    unblockFonts,
     scenarioId: c.scenarioId,
     localIndex: c.localIndex,
   };

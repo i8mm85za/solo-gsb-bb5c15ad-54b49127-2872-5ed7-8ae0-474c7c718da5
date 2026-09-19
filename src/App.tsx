@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import type {
   AuditMode,
+  FontConstraints,
   FontFileInfo,
   FontSpec,
   ParsedFont,
@@ -112,6 +113,20 @@ export default function App() {
   );
   const validFonts = useMemo(() => validEntries.map((e) => e.font), [validEntries]);
 
+  // ---- 入链约束（锁定/排除）：按字体 id 保留在 FontSpec 上，
+  // 排序、声明/实测覆盖切换均不影响；此处映射为有效字体下标空间 ----
+  const constraints: FontConstraints = useMemo(() => {
+    const locked: number[] = [];
+    const excluded: number[] = [];
+    validEntries.forEach((e, i) => {
+      if (e.font.constraint === 'locked') locked.push(i);
+      else if (e.font.constraint === 'excluded') excluded.push(i);
+    });
+    return { locked, excluded };
+  }, [validEntries]);
+  const excludedSet = useMemo(() => new Set(constraints.excluded), [constraints]);
+  const lockedSet = useMemo(() => new Set(constraints.locked), [constraints]);
+
   // ---- 各场景字素簇切分 ----
   const groupsGraphemes = useMemo(
     () => scenarios.map((s) => ({ scenarioId: s.id, graphemes: segmentGraphemes(s.text) })),
@@ -134,7 +149,8 @@ export default function App() {
     [solveGroups, validFonts, ignoreFormat],
   );
 
-  // ---- 回退链求解：所有场景的需求模式参与一次求解，链中字体全局唯一 ----
+  // ---- 回退链求解：所有场景的需求模式参与一次求解，链中字体全局唯一。
+  // 求解器先剔除禁用候选、纳入锁定字体，再优化其余字体（单场景/场景集共用）。 ----
   const solution = useMemo(
     () =>
       solveFallbackChain({
@@ -142,11 +158,15 @@ export default function App() {
         preference: validEntries.map((e) => e.order),
         patterns: analysis.patterns,
         lengthPriority,
+        locked: constraints.locked,
+        excluded: constraints.excluded,
       }),
-    [validFonts.length, validEntries, analysis.patterns, lengthPriority],
+    [validFonts.length, validEntries, analysis.patterns, lengthPriority, constraints],
   );
 
-  // ---- 承接分配：每个簇由共享链中第一种可覆盖字体承接（与浏览器回退语义一致） ----
+  // ---- 承接分配：每个簇由共享链中第一种可覆盖字体承接（与浏览器回退语义一致）。
+  // 缺失时区分根因：所有字体都不覆盖为「自然缺失」；有字体能覆盖但均被
+  // 「禁止入链」排除为「约束导致缺失」，并记录解除排除即可恢复的字体。 ----
   const flatClusters: ScenarioClusterAudit[] = useMemo(() => {
     const chainOrder = solution.selected; // 已按偏好排序
     return analysis.clusters.map((c) => {
@@ -160,16 +180,21 @@ export default function App() {
       }
       const assigned = chainOrder.find((f) => c.candidates.includes(f)) ?? null;
       if (assigned === null) {
+        // 链必命中每个可满足模式，故此时剩余候选必为被排除字体
+        const unblock = c.candidates.filter((f) => excludedSet.has(f));
+        const cause = c.candidates.length === 0 ? ('natural' as const) : ('constraint' as const);
         return toScenarioClusterAudit(
           c,
           null,
           'missing',
           findMissingCodepoints(c.required, validFonts),
+          cause,
+          cause === 'constraint' ? unblock : [],
         );
       }
       return toScenarioClusterAudit(c, assigned, 'covered', []);
     });
-  }, [analysis.clusters, solution.selected, validFonts]);
+  }, [analysis.clusters, solution.selected, validFonts, excludedSet]);
 
   // ---- 共享链上每种字体的承接簇数（参与场景合计 + 逐场景拆分；按场景 id 索引） ----
   const chain: ScenarioChainEntry[] = useMemo(() => {
@@ -191,16 +216,18 @@ export default function App() {
       name: validFonts[fontIndex].name,
       preference: validEntries[fontIndex].order,
       assignedClusters: totals.get(fontIndex) ?? 0,
+      locked: lockedSet.has(fontIndex),
       scenarioCounts: Object.fromEntries(perScenario.get(fontIndex) ?? new Map()),
     }));
-  }, [flatClusters, solution.selected, validFonts, validEntries]);
+  }, [flatClusters, solution.selected, validFonts, validEntries, lockedSet]);
 
+  // 未入选（冗余）：被排除字体不属于冗余，单独在约束清单中呈现
   const unselected = useMemo(
     () =>
       validEntries
-        .filter((_, i) => !solution.selected.includes(i))
+        .filter((_, i) => !solution.selected.includes(i) && !excludedSet.has(i))
         .map((e) => ({ name: e.font.name, preference: e.order })),
-    [validEntries, solution.selected],
+    [validEntries, solution.selected, excludedSet],
   );
 
   // ---- 逐场景视图：覆盖率 / 缺失簇 / 承接字体（场景内簇保序） ----
@@ -232,7 +259,7 @@ export default function App() {
     [scenarios, flatClusters, chain],
   );
 
-  // ---- 单字体失效韧性分析：逐一移除链中字体并对参与场景重解 ----
+  // ---- 单字体失效韧性分析：逐一移除链中字体并对参与场景重解（约束同步生效） ----
   const resilience = useMemo(
     () =>
       solution.selected.length > 0
@@ -244,6 +271,8 @@ export default function App() {
             lengthPriority,
             baselineClusters: flatClusters,
             baselineChain: solution.selected,
+            locked: constraints.locked,
+            excluded: constraints.excluded,
           })
         : [],
     [
@@ -254,6 +283,7 @@ export default function App() {
       lengthPriority,
       flatClusters,
       solution.selected,
+      constraints,
     ],
   );
 
@@ -308,7 +338,10 @@ export default function App() {
   const removeFont = (id: string) =>
     setFonts((fs) => fs.filter((f) => f.id !== id));
   const addFont = () =>
-    setFonts((fs) => [...fs, { id: uid(), name: '', rangesText: '', file: null }]);
+    setFonts((fs) => [
+      ...fs,
+      { id: uid(), name: '', rangesText: '', file: null, constraint: 'normal' },
+    ]);
 
   // ---- 场景编辑 ----
   const patchActive = (patch: Partial<ScenarioSpec>) =>
@@ -448,6 +481,7 @@ export default function App() {
         name: e.name,
         preference: e.preference,
         assignedClusters: e.assignedClusters,
+        locked: e.locked,
       })),
     [chain],
   );
@@ -545,6 +579,7 @@ export default function App() {
               validFonts={validFonts}
               chain={singleChain}
               unselected={unselected}
+              constraints={constraints}
               feasible={solution.feasible}
               exact={solution.exact}
               objective={solution.objective}
@@ -566,6 +601,7 @@ export default function App() {
               validFonts={validFonts}
               chain={chain}
               unselected={unselected}
+              constraints={constraints}
               feasible={solution.feasible}
               exact={solution.exact}
               objective={solution.objective}
@@ -588,7 +624,7 @@ export default function App() {
       </main>
 
       <footer className="app-footer">
-        字素簇切分基于 Intl.Segmenter · 求解器：唯一候选强制 + 支配约简 + 分支定界（预算内精确，超时退回贪心/局部搜索）
+        字素簇切分基于 Intl.Segmenter · 求解器：锁定/排除约束 + 唯一候选强制 + 支配约简 + 分支定界（预算内精确，超时退回贪心/局部搜索）
         {mode === 'set' && ' · 场景集：全部场景簇合并参与一次求解，共享链全局唯一'}
         · 上传字体仅在浏览器内解析 cmap，不发送服务端、不持久化
       </footer>

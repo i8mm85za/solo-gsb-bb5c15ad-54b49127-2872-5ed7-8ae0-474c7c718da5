@@ -16,6 +16,14 @@ export interface FontFileInfo {
   parsedAt: string;
 }
 
+/**
+ * 字体的入链约束：
+ * - normal：普通，参与正常求解；
+ * - locked：必须入链（锁定），求解器先把它纳入回退链再优化其余字体；
+ * - excluded：禁止入链（排除），从全部候选中剔除。
+ */
+export type FontConstraint = 'normal' | 'locked' | 'excluded';
+
 /** 用户录入的字体条目（编辑态） */
 export interface FontSpec {
   id: string;
@@ -26,6 +34,11 @@ export interface FontSpec {
    * 注意：只保存解析出的区间元数据，File/ArrayBuffer 绝不上传、不持久化。
    */
   file: FontFileInfo | null;
+  /**
+   * 入链约束。约束随字体 id 保留：调整列表顺序、切换声明/实测覆盖
+   * 求解开关都不会改变它；仅对当前有效的字体生效。
+   */
+  constraint: FontConstraint;
 }
 
 /** 解析后的字体条目 */
@@ -67,6 +80,13 @@ export interface RangeDiff {
 /** 字素簇的承接状态 */
 export type ClusterStatus = 'covered' | 'missing' | 'free';
 
+/**
+ * 缺失簇的根因细分：
+ * - natural：自然缺失 —— 所有有效字体都不覆盖所需码位；
+ * - constraint：约束导致缺失 —— 有字体能覆盖，但全部被「禁止入链」排除。
+ */
+export type MissingCause = 'natural' | 'constraint';
+
 /** 单个字素簇的审计结果 */
 export interface ClusterAudit {
   index: number;
@@ -78,7 +98,7 @@ export interface ClusterAudit {
   codepoints: number[];
   /** 需要字体实际覆盖的码位（已剔除透明格式字符时） */
   required: number[];
-  /** 可完整覆盖该簇的字体下标（相对有效字体列表） */
+  /** 可完整覆盖该簇的字体下标（相对有效字体列表，含被排除字体） */
   candidates: number[];
   /** 仅含透明格式字符，无需专门字体 */
   free: boolean;
@@ -87,6 +107,13 @@ export interface ClusterAudit {
   status: ClusterStatus;
   /** 所有字体都不覆盖的码位（仅缺失时有值） */
   missingCodepoints: number[];
+  /** 缺失根因（仅 status === 'missing' 时有值，否则为 null） */
+  missingCause: MissingCause | null;
+  /**
+   * 约束导致缺失时：解除「禁止入链」即可承接该簇的被排除字体下标
+   * （按偏好顺序）；其余情况为空数组。
+   */
+  unblockFonts: number[];
 }
 
 /** 审计模式：单场景（原单文本）或场景集（多文本合并求解） */
@@ -106,4 +133,15 @@ export interface ScenarioClusterAudit extends ClusterAudit {
   scenarioId: string;
   /** 簇在所属场景内的局部下标（从 0 开始） */
   localIndex: number;
+}
+
+/**
+ * 一次求解生效的入链约束（下标均为「有效字体列表」下标）：
+ * 由字体条目上的 constraint 派生，单场景与场景集模式共用同一套规则。
+ */
+export interface FontConstraints {
+  /** 必须入链（锁定）的有效字体下标 */
+  locked: number[];
+  /** 禁止入链（排除）的有效字体下标 */
+  excluded: number[];
 }

@@ -1,5 +1,5 @@
 import { useRef } from 'react';
-import type { FontSpec, ParsedFont, RangeDiff } from '../types';
+import type { FontConstraint, FontSpec, ParsedFont, RangeDiff } from '../types';
 import { countCodepoints, formatRangesCompact } from '../lib/ranges';
 import { formatCodepoint } from '../lib/grapheme';
 
@@ -26,6 +26,21 @@ function formatSize(bytes: number): string {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
 }
+
+/** 入链约束三态选项（普通 / 必须入链 / 禁止入链） */
+const CONSTRAINT_OPTIONS: { value: FontConstraint; label: string; hint: string }[] = [
+  { value: 'normal', label: '普通', hint: '参与正常求解，不附加约束' },
+  {
+    value: 'locked',
+    label: '🔒 必须入链',
+    hint: '锁定：求解器先把该字体纳入回退链，再优化其余字体',
+  },
+  {
+    value: 'excluded',
+    label: '🚫 禁止入链',
+    hint: '排除：从全部候选中剔除；仅能由它覆盖的字素簇将标记为「约束导致缺失」',
+  },
+];
 
 /** 差集明细：可折叠的紧凑区间列表 */
 function DiffDetails({
@@ -56,6 +71,8 @@ function DiffDetails({
 /**
  * 字体列表编辑器：顺序即回退偏好（第 1 位最优先）。
  * 范围语法：U+0020-007E、U+4E00、U+4??（通配），逗号/空白分隔。
+ * 每个条目可设入链约束（普通 / 必须入链 / 禁止入链），约束随字体 id 保留，
+ * 调整顺序或切换声明/实测覆盖求解均不影响。
  * 每个条目可上传本地 TTF/OTF：仅在浏览器内解析 cmap format 4/12，
  * 文件内容不上传、不持久化；解析错误只在该条目内提示。
  */
@@ -74,6 +91,8 @@ export default function FontEditor({
   onClearFile,
 }: FontEditorProps) {
   const inputRefs = useRef<Map<string, HTMLInputElement | null>>(new Map());
+  const lockedCount = fonts.filter((f) => f.constraint === 'locked').length;
+  const excludedCount = fonts.filter((f) => f.constraint === 'excluded').length;
 
   return (
     <div className="font-editor">
@@ -93,6 +112,13 @@ export default function FontEditor({
         </span>
       </label>
 
+      {(lockedCount > 0 || excludedCount > 0) && (
+        <div className="constraint-summary muted small">
+          入链约束生效中：{lockedCount} 种必须入链 · {excludedCount} 种禁止入链
+          （约束随字体保留，排序与声明/实测切换不影响）
+        </div>
+      )}
+
       <div className="font-list">
         {fonts.map((f, i) => {
           const p = parsed[i];
@@ -110,7 +136,16 @@ export default function FontEditor({
                 }
               : null;
           return (
-            <div className={`font-row${activeError ? ' has-error' : ''}`} key={f.id}>
+            <div
+              className={`font-row${activeError ? ' has-error' : ''}${
+                f.constraint === 'excluded'
+                  ? ' is-excluded'
+                  : f.constraint === 'locked'
+                    ? ' is-locked'
+                    : ''
+              }`}
+              key={f.id}
+            >
               <div className="font-order" title="偏好顺序（1 = 最优先）">
                 {i + 1}
               </div>
@@ -128,6 +163,33 @@ export default function FontEditor({
                   spellCheck={false}
                   onChange={(e) => onUpdate(f.id, { rangesText: e.target.value })}
                 />
+                <div
+                  className="constraint-picker"
+                  role="group"
+                  aria-label="入链约束（普通 / 必须入链 / 禁止入链）"
+                >
+                  {CONSTRAINT_OPTIONS.map((opt) => (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      className={`constraint-option${f.constraint === opt.value ? ` active ${opt.value}` : ''}`}
+                      title={opt.hint}
+                      onClick={() => onUpdate(f.id, { constraint: opt.value })}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+                {f.constraint === 'excluded' && (
+                  <div className="font-msg warn">
+                    已排除：该字体不参与候选与求解；仅能由它覆盖的字素簇将标记为「约束导致缺失」。
+                  </div>
+                )}
+                {f.constraint === 'locked' && (
+                  <div className="font-msg locked-hint">
+                    已锁定：求解器先把该字体纳入回退链，再优化其余字体。
+                  </div>
+                )}
                 {p?.error ? (
                   <div className="font-msg error">声明范围：{p.error}</div>
                 ) : p ? (
